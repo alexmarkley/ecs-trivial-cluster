@@ -1,0 +1,177 @@
+Description: >
+  This is the base template which includes a VPC and some key dependencies.
+
+Parameters:
+  VpcCIDR:
+    Description: Please enter the IP range (CIDR notation) for this VPC
+    Type: String
+    Default: 10.168.0.0/16
+
+  PublicSubnet1CIDR:
+    Description: Please enter the IP range (CIDR notation) for the public subnet in the first Availability Zone
+    Type: String
+    Default: 10.168.0.0/24
+
+  PublicSubnet2CIDR:
+    Description: Please enter the IP range (CIDR notation) for the public subnet in the second Availability Zone
+    Type: String
+    Default: 10.168.1.0/24
+
+Outputs:
+  VPC:
+    Description: A reference to the created VPC
+    Value: !Ref VPC
+    Export:
+      Name: !Sub ${AWS::StackName}-VPC
+
+  LoadBalancer:
+    Description: A reference to the Application Load Balancer
+    Value: !Ref LoadBalancer
+    Export:
+      Name: !Sub ${AWS::StackName}-LoadBalancer
+
+  LoadBalancerDNS:
+    Description: The DNS of the ALB
+    Value: !GetAtt LoadBalancer.DNSName
+    Export:
+      Name: !Sub ${AWS::StackName}-LoadBalancerDNS
+
+  LoadBalancerHTTPListener:
+    Description: The HTTP (80) listener
+    Value: !Ref LoadBalancerHTTPListener
+    Export:
+      Name: !Sub ${AWS::StackName}-LoadBalancerHTTPListener
+
+  ALBSecurityGroupId:
+    Description: The group id of the load balancer's security group. For micro-segmentation of network security.
+    Value: !GetAtt ALBSecurityGroup.GroupId
+    Export:
+      Name: !Sub ${AWS::StackName}-ALBSecurityGroupId
+
+
+Resources:
+
+  ###################################
+  ###### VPC Network Resources ######
+  ###################################
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName} VPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName} Internet Gateway
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Ref PublicSubnet1CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName} Public Subnet (AZ1)
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Ref PublicSubnet2CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName} Public Subnet (AZ2)
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName} Public Routes
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+
+  ###########################
+  ###### LOAD BALANCER ######
+  ###########################
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Allow ingress to the ALB
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: 80
+          ToPort: 80
+          IpProtocol: tcp
+      Tags:
+        - Key: Name
+          Value: ALB - Internet-Facing Tier
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}
+
+  LoadBalancerHTTPListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            ContentType: text/plain
+            MessageBody: "503 - We're having a moment, please check back later."
+            StatusCode: 503
+
+  ###############################
+  ###### ECS Control Plane ######
+  ###############################
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+
